@@ -50,7 +50,13 @@ def _call_one_hop(provider_name: str, model: str, messages: list[dict],
     spec = PROVIDERS[provider_name]
     import os
 
-    api_key = os.getenv(spec.api_key_env)
+    # .strip(): a key pasted into a hosting dashboard with a stray
+    # leading/trailing space (easy to do copying out of a ".env"-style
+    # file) is otherwise sent as-is in the Authorization header, where
+    # every provider just treats it as an invalid key - indistinguishable
+    # from a real outage unless you happen to test the same key with and
+    # without whitespace.
+    api_key = (os.getenv(spec.api_key_env) or "").strip()
     if not api_key:
         raise PermissionError(f"No API key set for {provider_name} ({spec.api_key_env})")
 

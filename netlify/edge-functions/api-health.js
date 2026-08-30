@@ -26,6 +26,13 @@ const PROVIDERS = {
 };
 const PROVIDER_PRIORITY = ["groq", "openrouter", "gemini"];
 
+// Trims whatever Netlify.env.get() returns before it's ever used - see
+// api-chat.js for why (a key pasted with a stray leading/trailing space
+// looks like a real outage otherwise, not an invalid credential).
+function getApiKey(envVarName) {
+  return (Netlify.env.get(envVarName) || "").trim();
+}
+
 function getHopOrder() {
   const override = (Netlify.env.get("LLM_HOP_ORDER") || "").trim();
   if (override) {
@@ -43,7 +50,7 @@ function getHopOrder() {
   const hops = [];
   for (const providerName of PROVIDER_PRIORITY) {
     const spec = PROVIDERS[providerName];
-    if (!Netlify.env.get(spec.apiKeyEnv)) continue;
+    if (!getApiKey(spec.apiKeyEnv)) continue;
     for (const model of spec.defaultModels) hops.push([providerName, model]);
   }
   return hops;

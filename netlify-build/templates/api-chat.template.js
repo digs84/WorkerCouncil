@@ -57,6 +57,18 @@ const PROVIDERS = {
 // useful final fallback.
 const PROVIDER_PRIORITY = ["groq", "openrouter", "gemini"];
 
+// Trims whatever Netlify.env.get() returns before it's ever used - a key
+// pasted into Netlify's UI with a stray leading/trailing space (easy to do
+// when copying out of a .env file formatted as "KEY= value") is otherwise
+// silently sent as-is in the Authorization header, where every provider
+// treats it as simply invalid. That looks identical to a real outage
+// (fast, consistent auth-style failure across every hop) unless you
+// happen to test the exact same key with and without whitespace - see the
+// investigation that found this for the full story.
+function getApiKey(envVarName) {
+  return (Netlify.env.get(envVarName) || "").trim();
+}
+
 function getHopOrder() {
   const override = (Netlify.env.get("LLM_HOP_ORDER") || "").trim();
   if (override) {
@@ -74,7 +86,7 @@ function getHopOrder() {
   const hops = [];
   for (const providerName of PROVIDER_PRIORITY) {
     const spec = PROVIDERS[providerName];
-    if (!Netlify.env.get(spec.apiKeyEnv)) continue;
+    if (!getApiKey(spec.apiKeyEnv)) continue;
     for (const model of spec.defaultModels) hops.push([providerName, model]);
   }
   return hops;
@@ -97,7 +109,7 @@ const SAFETY_MARGIN_MS = 500;
 
 async function callOneHop(providerName, model, messages, temperature, maxTokens, timeoutMs) {
   const spec = PROVIDERS[providerName];
-  const apiKey = Netlify.env.get(spec.apiKeyEnv);
+  const apiKey = getApiKey(spec.apiKeyEnv);
   if (!apiKey) {
     throw new Error(`No API key set for ${providerName} (${spec.apiKeyEnv})`);
   }

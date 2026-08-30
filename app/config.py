@@ -118,7 +118,7 @@ def _default_hop_order() -> list[tuple[str, str]]:
     hops: list[tuple[str, str]] = []
     for provider_name in PROVIDER_PRIORITY:
         spec = PROVIDERS[provider_name]
-        if not os.getenv(spec.api_key_env):
+        if not (os.getenv(spec.api_key_env) or "").strip():
             continue  # skip providers the user hasn't signed up for
         for model in spec.default_models:
             hops.append((provider_name, model))
