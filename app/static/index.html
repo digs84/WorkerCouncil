@@ -403,10 +403,10 @@
     justify-content: space-between;
     gap: 10px;
     margin: 12px 2px 0;
-    padding: 10px 12px;
+    padding: 12px 14px;
     border-radius: 10px;
-    background: var(--panel);
-    border: 1px solid var(--border);
+    background: var(--gold-soft);
+    border: 1px solid var(--gold);
     font-size: 0.82rem;
   }
   .install-banner.visible { display: flex; }
@@ -451,6 +451,7 @@
       <h1>WC Assist</h1>
     </div>
     <div class="nav-pills">
+      <button type="button" class="nav-pill" id="installPill" style="display:none;">Install</button>
       <button type="button" class="nav-pill" id="recentBtn">Recent</button>
       <button type="button" class="nav-pill" id="sourcesBtn">Sources</button>
     </div>
@@ -872,6 +873,7 @@ const installBanner = document.getElementById('installBanner');
 const installBannerText = document.getElementById('installBannerText');
 const installBtn = document.getElementById('installBtn');
 const installDismiss = document.getElementById('installDismiss');
+const installPill = document.getElementById('installPill');
 
 const DISMISS_KEY = 'wc-assistant-install-dismissed';
 const isStandalone =
@@ -886,28 +888,45 @@ function showInstallBanner() {
   installBanner.classList.add('visible');
 }
 
+// The banner above only shows once per session (or not at all if the user
+// dismissed it) and Chrome decides in its own time when beforeinstallprompt
+// actually fires - a persistent "Install" pill in the header means the
+// option is never lost even if that first moment is missed or dismissed.
 window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault();
   deferredInstallPrompt = event;
   installBtn.style.display = '';
   installBannerText.textContent = 'Install this app for one-tap access next time - no app store needed.';
   showInstallBanner();
+  if (!isStandalone) installPill.style.display = '';
 });
 
 if (isIos && !isStandalone) {
+  // Safari has no installPrompt API at all - this is the ceiling of what's
+  // possible there; the pill re-opens the same manual instructions on demand.
   installBtn.style.display = 'none';
   installBannerText.textContent =
     'Install this app: tap the Share icon, then "Add to Home Screen".';
   showInstallBanner();
+  installPill.style.display = '';
 }
 
-installBtn.addEventListener('click', async () => {
-  if (!deferredInstallPrompt) return;
-  deferredInstallPrompt.prompt();
-  await deferredInstallPrompt.userChoice;
-  deferredInstallPrompt = null;
-  installBanner.classList.remove('visible');
-});
+async function triggerInstall() {
+  if (deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    installBanner.classList.remove('visible');
+    installPill.style.display = 'none';
+  } else if (isIos) {
+    // Bypass the session-dismiss check: an explicit click on the pill is a
+    // fresh request to see the instructions again, not the original prompt.
+    installBanner.classList.add('visible');
+  }
+}
+
+installBtn.addEventListener('click', triggerInstall);
+installPill.addEventListener('click', triggerInstall);
 
 installDismiss.addEventListener('click', () => {
   installBanner.classList.remove('visible');
@@ -916,6 +935,7 @@ installDismiss.addEventListener('click', () => {
 
 window.addEventListener('appinstalled', () => {
   installBanner.classList.remove('visible');
+  installPill.style.display = 'none';
 });
 </script>
 </body>
