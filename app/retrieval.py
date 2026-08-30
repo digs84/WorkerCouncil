@@ -195,8 +195,36 @@ def _expand_query_terms(query: str) -> set[str]:
     # glossary below with noise.
     if detect_language(query) == "de":
         terms.update(re.findall(r"[a-zäöüß]+", q))
+
+    def _common_prefix_len(a: str, b: str) -> int:
+        i = 0
+        while i < len(a) and i < len(b) and a[i] == b[i]:
+            i += 1
+        return i
+
+    query_words = re.findall(r"[a-z]+", q)
     for phrase, de_terms in GLOSSARY.items():
-        if phrase in q:
+        if " " in phrase:
+            # Multi-word phrases ("personal data", "works council") are
+            # compound concepts, not easily stemmed - match as a literal
+            # substring.
+            matched = phrase in q
+        else:
+            # Single-word keys match by shared prefix, not exact word or
+            # full startswith, so "dismissed"/"dismissal"/"dismissing" all
+            # hit the same glossary entry even though none is a prefix of
+            # another (they share only "dismiss", 7 of 9-10 letters).
+            # Without this, a query using an unlisted inflection (e.g.
+            # asking "dismissed" when only "dismissal" was in the
+            # glossary) loses its only discriminating term and falls back
+            # to whatever generic word (like "works council") happens to
+            # be common to nearly every section, making the ranking
+            # essentially noise.
+            matched = any(
+                len(w) >= 4 and len(phrase) >= 4 and _common_prefix_len(w, phrase) >= 4
+                for w in query_words
+            )
+        if matched:
             terms.update(de_terms)
     return terms
 

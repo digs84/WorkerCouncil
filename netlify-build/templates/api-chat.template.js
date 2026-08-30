@@ -258,8 +258,31 @@ function expandQueryTerms(query, language) {
   if (language === "de") {
     for (const w of q.match(/[a-zäöüß]+/g) || []) terms.add(w);
   }
+  const queryWords = q.match(/[a-z]+/g) || [];
   for (const [phrase, deTerms] of Object.entries(GLOSSARY)) {
-    if (q.includes(phrase)) for (const t of deTerms) terms.add(t);
+    let matched;
+    if (phrase.includes(" ")) {
+      // Multi-word phrases ("personal data", "works council") are compound
+      // concepts, not easily stemmed - match as a literal substring.
+      matched = q.includes(phrase);
+    } else {
+      // Single-word keys match by shared prefix, not exact word or full
+      // startsWith, so "dismissed"/"dismissal"/"dismissing" all hit the
+      // same glossary entry even though none is a prefix of another
+      // (they share only "dismiss", 7 of 9-10 letters). Without this, a
+      // query using an unlisted inflection (e.g. asking "dismissed" when
+      // only "dismissal" was in the glossary) loses its only
+      // discriminating term and falls back to whatever generic word (like
+      // "works council") happens to be common to nearly every section,
+      // making the ranking essentially noise.
+      matched = queryWords.some((w) => {
+        if (w.length < 4 || phrase.length < 4) return false;
+        let i = 0;
+        while (i < w.length && i < phrase.length && w[i] === phrase[i]) i++;
+        return i >= 4;
+      });
+    }
+    if (matched) for (const t of deTerms) terms.add(t);
   }
   return terms;
 }
