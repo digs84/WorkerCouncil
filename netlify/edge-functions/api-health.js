@@ -24,7 +24,7 @@ const PROVIDERS = {
     ],
   },
 };
-const PROVIDER_PRIORITY = ["groq", "gemini", "openrouter"];
+const PROVIDER_PRIORITY = ["groq", "openrouter", "gemini"];
 
 function getHopOrder() {
   const override = (Netlify.env.get("LLM_HOP_ORDER") || "").trim();

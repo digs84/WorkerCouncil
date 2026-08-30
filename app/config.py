@@ -72,9 +72,12 @@ PROVIDERS: dict[str, ProviderSpec] = {
     ),
 }
 
-# Fixed provider priority (matches what was requested: Groq first, then
-# Gemini, then OpenRouter's free-model pool as the last resort/backstop).
-PROVIDER_PRIORITY = ["groq", "gemini", "openrouter"]
+# Gemini's free tier is only 20 requests/day per model (confirmed via its
+# own 429 response), so trying it before OpenRouter (20/min, 50/day) just
+# wastes a hop attempt on something almost always exhausted. Groq first
+# (best free-tier limits), OpenRouter second, Gemini last as a rarely-
+# useful final fallback.
+PROVIDER_PRIORITY = ["groq", "openrouter", "gemini"]
 
 
 # ---------------------------------------------------------------------------

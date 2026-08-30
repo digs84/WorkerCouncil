@@ -50,7 +50,12 @@ const PROVIDERS = {
     },
   },
 };
-const PROVIDER_PRIORITY = ["groq", "gemini", "openrouter"];
+// Gemini's free tier is only 20 requests/day per model (confirmed via its
+// own 429 response), so trying it before OpenRouter (20/min, 50/day) just
+// wastes a hop attempt on something almost always exhausted. Groq first
+// (best free-tier limits), OpenRouter second, Gemini last as a rarely-
+// useful final fallback.
+const PROVIDER_PRIORITY = ["groq", "openrouter", "gemini"];
 
 function getHopOrder() {
   const override = (Netlify.env.get("LLM_HOP_ORDER") || "").trim();
@@ -490,10 +495,10 @@ export default async (request) => {
     // Wider net than the Python version's fallback (top_k=5): there's no
     // LLM selector call here to narrow candidates semantically first (see
     // file header), so lexical scoring alone is more likely to let a
-    // genuinely relevant section fall just outside the cutoff - a few
-    // extra excerpts cost no extra time budget, only a slightly bigger
-    // prompt, and let the answerer LLM do the final relevance judgment.
-    const sections = lexicalSearch(question, language, 8);
+    // genuinely relevant section fall just outside the cutoff. 6 (rather
+    // than 8) trades a little of that recall margin for a smaller prompt -
+    // free-tier token/quota pressure matters more here than it did before.
+    const sections = lexicalSearch(question, language, 6);
 
     if (!sections.length) {
       return jsonResponse({
@@ -515,7 +520,7 @@ export default async (request) => {
           content: `TARGET_LANGUAGE: ${language}\nEXCERPTS:\n${excerpts}\n\nQUESTION: ${question}`,
         },
       ];
-      const result = await chatCompletion(messages, { temperature: 0.2, maxTokens: 2500, deadline });
+      const result = await chatCompletion(messages, { temperature: 0.2, maxTokens: 1500, deadline });
       const [answerText, followUps] = splitAnswerAndFollowups(result.text);
       return jsonResponse({
         answer: `${answerText}\n\n---\n${disclaimer}`,

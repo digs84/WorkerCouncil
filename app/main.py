@@ -245,7 +245,7 @@ def chat_endpoint(req: ChatRequest):
                 ),
             },
         ]
-        result = chat(messages, temperature=0.2, max_tokens=2500)
+        result = chat(messages, temperature=0.2, max_tokens=1500)
         answer_text, follow_ups = _split_answer_and_followups(result.text)
         answer = f"{answer_text}\n\n---\n{disclaimer}"
         answer_confidence = _compute_confidence(len(sections), False)
