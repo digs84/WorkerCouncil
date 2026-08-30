@@ -370,6 +370,7 @@ worker-council-app/
 │   ├── retrieval.py           Search over the parsed law data + law status for /api/sources
 │   ├── i18n.py                 German/English detection, disclaimers, fixed fallback strings
 │   ├── config.py                 Provider registry, hop-order config, LAW_REGISTRY
+│   ├── requirements.txt           Kept out of the repo root on purpose - see note below
 │   └── static/
 │       ├── index.html            Chat UI: header, Holds row, Recent/Sources panels, hero, chat, ask bar
 │       ├── manifest.json          PWA metadata (name, icons, dark theme colors)
@@ -394,9 +395,16 @@ worker-council-app/
 ├── public/                          Static frontend Netlify serves (mirrors app/static/)
 ├── package.json
 ├── .env.example
-├── requirements.txt
 └── run.sh
 ```
+
+`requirements.txt` lives at `app/requirements.txt`, not the repo root -
+Netlify's build system auto-detects a root-level `requirements.txt` and
+runs `pip install` on it unconditionally, even on a deploy that's pure
+JS and never touches Python. That install then fails on Netlify's build
+image, which has no Rust toolchain to compile `pydantic-core` from
+source. Moving the file out of the root stops Netlify from finding it;
+the Dockerfile and `run.sh` were updated to the new path.
 
 ## Running the tests
 

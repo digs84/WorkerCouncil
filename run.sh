@@ -10,7 +10,7 @@ if [ ! -d ".venv" ]; then
 fi
 source .venv/bin/activate
 
-pip install -q -r requirements.txt
+pip install -q -r app/requirements.txt
 
 if [ ! -f "data/betrvg.json" ]; then
   echo "Fetching BetrVG text from gesetze-im-internet.de..."
