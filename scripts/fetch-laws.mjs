@@ -144,12 +144,39 @@ function parseNorms(xmlText, defaultAbbreviation) {
   return sections;
 }
 
+const FETCH_RETRIES = 3;
+const RETRY_DELAY_MS = 3000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// A CI build server's network path to a given site can be flakier than a
+// local machine's (different egress IPs/routing, occasional transient DNS
+// or connection hiccups on a fresh container) - a few retries with a short
+// backoff costs nothing on the common case and ride out that flakiness on
+// the uncommon one.
+async function fetchWithRetry(url, options) {
+  let lastErr;
+  for (let attempt = 1; attempt <= FETCH_RETRIES; attempt++) {
+    try {
+      return await fetch(url, options);
+    } catch (err) {
+      lastErr = err;
+      const cause = err.cause ? ` (${err.cause.code || err.cause.message || err.cause})` : "";
+      console.warn(`  fetch attempt ${attempt}/${FETCH_RETRIES} failed${cause}: ${err.message}`);
+      if (attempt < FETCH_RETRIES) await sleep(RETRY_DELAY_MS * attempt);
+    }
+  }
+  throw lastErr;
+}
+
 async function fetchLaw(law) {
   const sourcePage = `https://www.gesetze-im-internet.de/${law.slug}/`;
   const zipUrl = `${sourcePage}xml.zip`;
   console.log(`Downloading ${zipUrl} ...`);
 
-  const resp = await fetch(zipUrl, { headers: HEADERS });
+  const resp = await fetchWithRetry(zipUrl, { headers: HEADERS });
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status} fetching ${zipUrl}`);
   }
@@ -193,7 +220,14 @@ async function main() {
     try {
       perLawSections[law.defaultAbbreviation] = await fetchLaw(law);
     } catch (err) {
+      // err.message alone is often just "fetch failed" - Node's fetch()
+      // wraps the real network-level error (DNS, TLS, connection refused,
+      // timeout, ...) in err.cause, which is essential for diagnosing a
+      // build-environment-specific failure (e.g. Netlify's build servers
+      // reaching gesetze-im-internet.de differently than a local machine).
       console.error(`WARNING: could not fetch/parse ${law.defaultAbbreviation}: ${err.message}`);
+      if (err.cause) console.error(`  cause: ${err.cause.code || ""} ${err.cause.message || err.cause}`);
+      if (err.stack) console.error(err.stack);
       failures.push(law.defaultAbbreviation);
     }
   }
