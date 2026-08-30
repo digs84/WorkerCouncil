@@ -3,7 +3,7 @@
 // point of this app is fresh, rate-limit-aware answers, so those must
 // never be served stale or from a browser cache.
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v3";
 const CACHE_NAME = `wc-assistant-${CACHE_VERSION}`;
 
 const APP_SHELL = [
