@@ -3,7 +3,7 @@
 // point of this app is fresh, rate-limit-aware answers, so those must
 // never be served stale or from a browser cache.
 
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v1";
 const CACHE_NAME = `wc-assistant-${CACHE_VERSION}`;
 
 const APP_SHELL = [
@@ -52,23 +52,6 @@ self.addEventListener("fetch", (event) => {
             { status: 503, headers: { "Content-Type": "application/json" } }
           )
       )
-    );
-    return;
-  }
-
-  const isHtmlDocument = url.pathname === "/" || url.pathname.endsWith(".html");
-
-  if (isHtmlDocument) {
-    event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          if (response && response.status === 200) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
-          return response;
-        })
-        .catch(() => caches.match(event.request))
     );
     return;
   }

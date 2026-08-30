@@ -1,0 +1,13 @@
+{
+  "name": "worker-council-app-netlify",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch-laws": "node scripts/fetch-laws.mjs",
+    "test": "node --test netlify-build/test/api-chat.test.mjs"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.8.10",
+    "adm-zip": "^0.6.0"
+  }
+}

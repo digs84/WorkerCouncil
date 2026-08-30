@@ -120,6 +120,82 @@ redeploy of code.
 
 ---
 
+## Part 1b — Alternative: deploy on Netlify
+
+Netlify has no Python runtime, so it can't run the FastAPI backend in
+`app/` directly. This repo also ships a **JS port** of that backend as
+[Netlify Edge Functions](https://docs.netlify.com/build/edge-functions/overview/)
+in `netlify/edge-functions/` (generated - see below), so the whole app,
+frontend and API both, can live on Netlify as a single site if you'd
+rather use it than Render.
+
+**Two deliberate differences from the Render/Python version**, both
+because Netlify Edge Functions must send response headers within ~40
+seconds, whereas real Groq/Gemini calls have been observed taking up to
+~25-30s on their own (model "thinking" overhead):
+
+1. **No LLM-based section selector.** The Python version makes two
+   sequential LLM calls per question (pick relevant §§, then answer).
+   The Netlify version always uses fast local lexical/glossary matching
+   (`app/retrieval.py`'s degraded-mode fallback, ported to JS) to pick
+   sections, so only one LLM call (the answer) has to fit the time
+   budget. This is quicker and needs no extra AI calls, but is less
+   precise for oddly-phrased or multi-concept questions than the
+   LLM-based selector - the answering model is instructed to say so
+   plainly rather than guess when the retrieved excerpts don't cover the
+   question.
+2. Each provider hop gets a longer per-hop timeout (up to 25s) since
+   there's no selector call competing for the budget. If every hop still
+   doesn't answer in time, the request degrades to the same raw-text
+   fallback the Python version uses when every provider is exhausted,
+   instead of Netlify killing the request with no answer at all.
+
+The law text itself is downloaded and parsed the same way as the Render
+path, just once per build (see `scripts/fetch-laws.mjs`, a Node port of
+`scripts/fetch_betrvg.py` / `scripts/fetch_bdsg.py`), and baked directly
+into the generated edge functions - Edge Functions have no bundled-file
+or JSON-import support and no shared runtime disk to read a data file
+from at request time.
+
+### Steps
+
+1. Get your free API key(s) - same as step 1 in Part 1 above.
+2. Push this project to GitHub - same as step 2 in Part 1 above.
+3. Sign up / log in at [netlify.com](https://netlify.com) (free, no
+   card). **Add new site** → **Import an existing project** → pick your
+   GitHub repo. Netlify reads `netlify.toml` automatically (build
+   command `npm install && npm run fetch-laws`, publish directory
+   `public`).
+4. Before the first deploy, go to **Site configuration → Environment
+   variables** and add your API key(s) (`GROQ_API_KEY`, `GEMINI_API_KEY`,
+   `OPENROUTER_API_KEY` - leave any you don't have blank). **Set the
+   scope to include Functions** - variables scoped only to the build
+   won't be visible to the edge functions at request time.
+5. Deploy. Watch the build log for the "Wrote N sections..." lines from
+   `scripts/fetch-laws.mjs` to confirm both laws downloaded.
+6. You get a URL like `https://your-site-name.netlify.app` - that's the
+   app, same as the Render URL in Part 1.
+
+### Updating later
+
+Push new commits and Netlify redeploys automatically, re-running
+`scripts/fetch-laws.mjs` (so the law text and generated edge functions
+are always rebuilt fresh, never stale). To change an API key, edit it
+under Site configuration → Environment variables - no code change or
+redeploy trigger needed, it takes effect on the next request.
+
+### Editing the Netlify backend's logic
+
+`netlify/edge-functions/*.js` are **generated files** (gitignored, not
+the source of truth) - edit the templates in `netlify-build/templates/`
+instead and run `npm run fetch-laws` to regenerate, or just push and let
+Netlify's build do it. This keeps the law-text-embedding step (which
+only a build script can do - see above) and the actual request-handling
+logic in one place per function, instead of a separate templating layer
+on top of hand-maintained files.
+
+---
+
 ## Part 2 — For everyone else: install the app
 
 Once you have the URL from Part 1, share it with your works council /
@@ -208,7 +284,23 @@ docker build -t worker-council-app .
 docker run -p 8000:8000 --env-file .env worker-council-app
 ```
 
-Then open http://127.0.0.1:8000. Note: installing a PWA generally
+To test the Netlify (Edge Functions) version locally instead, via the
+[Netlify CLI](https://docs.netlify.com/cli/get-started/):
+
+```bash
+npm install
+npm install -g netlify-cli
+netlify dev
+```
+
+`netlify dev` runs `netlify.toml`'s build command (which downloads and
+embeds the law text - see Part 1b above) and serves the site with the
+edge functions live at http://localhost:8888. Environment variables for
+this local run come from `netlify env:set` / the Netlify CLI's own login
+context, not from `.env` (that file is only read by the Python version).
+
+Then open http://127.0.0.1:8000 (Python) or http://localhost:8888
+(Netlify CLI). Note: installing a PWA generally
 requires HTTPS, so "Install" banners may not appear over plain
 `http://127.0.0.1` in every browser — that's expected locally and works
 fine once deployed to Render's HTTPS URL.
@@ -286,18 +378,29 @@ worker-council-app/
 │       └── icons/                    192/512/maskable/apple-touch icons + logo-mark.png
 ├── scripts/
 │   ├── fetch_betrvg.py      Downloads + parses BetrVG -> data/betrvg.json
-│   └── fetch_bdsg.py         Downloads + parses BDSG -> data/bdsg.json
-├── tests/                    Unit tests (mocked HTTP, no API keys needed)
-├── data/betrvg.json          Generated at container startup (not checked in)
-├── data/bdsg.json             Generated at container startup (not checked in)
+│   ├── fetch_bdsg.py         Downloads + parses BDSG -> data/bdsg.json
+│   └── fetch-laws.mjs         Netlify build step: Node port of the two scripts above,
+│                               also bakes the result into netlify/edge-functions/
+├── tests/                    Python unit tests (mocked HTTP, no API keys needed)
+├── data/betrvg.json          Generated at container/build time (not checked in)
+├── data/bdsg.json             Generated at container/build time (not checked in)
 ├── Dockerfile                 Used for both local Docker runs and Render deploy
 ├── render.yaml                  Render Blueprint (auto-config for one-click deploy)
+├── netlify.toml                  Netlify build/publish config (see README "Part 1b")
+├── netlify-build/
+│   ├── templates/                  Source-of-truth templates for the generated edge functions
+│   └── test/                        Node test runner tests for the generated edge functions
+├── netlify/edge-functions/         Generated by scripts/fetch-laws.mjs (gitignored)
+├── public/                          Static frontend Netlify serves (mirrors app/static/)
+├── package.json
 ├── .env.example
 ├── requirements.txt
 └── run.sh
 ```
 
 ## Running the tests
+
+Python (the Render/FastAPI version):
 
 ```bash
 pip install pytest
@@ -307,3 +410,14 @@ python -m pytest tests/ -v
 These test the hop/fallback logic (rate-limit → next provider → all
 exhausted → graceful error) and the retrieval logic against a small
 synthetic law dataset — no real API keys or network access required.
+
+JS (the Netlify Edge Functions port):
+
+```bash
+npm install
+npm run fetch-laws   # generates netlify/edge-functions/*.js first
+npm test
+```
+
+Mocks `fetch` and the `Netlify` global, so no real API keys or a live
+Netlify/Deno environment are needed either.

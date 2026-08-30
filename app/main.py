@@ -119,6 +119,40 @@ class ChatResponse(BaseModel):
     model_used: str | None = None
     degraded: bool = False
     language: str = "en"
+    confidence: str = "medium"
+    source_summary: str = ""
+
+
+def _compute_confidence(section_count: int, degraded: bool) -> str:
+    """Confidence level for an answer based on how many sections matched and
+    whether it came from degraded fallback mode."""
+    if degraded:
+        return "low"
+    if section_count >= 3:
+        return "high"
+    if section_count >= 1:
+        return "medium"
+    return "low"
+
+
+def _summarize_sources(sections: list[dict]) -> str:
+    """Return a compact source summary like '§ 87, § 88 (BetrVG)' for UI."""
+    if not sections:
+        return ""
+    by_law: dict[str, list[str]] = {}
+    for s in sections:
+        law = str(s.get("law_abbreviation", "")).strip()
+        section = str(s.get("section", "")).strip()
+        if not law and not section:
+            continue
+        by_law.setdefault(law, []).append(section)
+    if not by_law:
+        return ", ".join(str(s.get("section", "")).strip() for s in sections if s.get("section"))
+    parts = []
+    for law, sections_list in by_law.items():
+        unique_sections = list(dict.fromkeys(sections_list))
+        parts.append(f"{', '.join(unique_sections)} ({law})" if law else ', '.join(unique_sections))
+    return "; ".join(parts)
 
 
 def select_relevant_sections(question: str) -> list[tuple[str, str]]:
@@ -214,6 +248,7 @@ def chat_endpoint(req: ChatRequest):
         result = chat(messages, temperature=0.2, max_tokens=2500)
         answer_text, follow_ups = _split_answer_and_followups(result.text)
         answer = f"{answer_text}\n\n---\n{disclaimer}"
+        answer_confidence = _compute_confidence(len(sections), False)
         return ChatResponse(
             answer=answer,
             cited_sections=sections,
@@ -222,12 +257,15 @@ def chat_endpoint(req: ChatRequest):
             model_used=result.model,
             degraded=False,
             language=language,
+            confidence=answer_confidence,
+            source_summary=_summarize_sources(sections),
         )
     except AllProvidersExhaustedError as exc:
         logger.error("All providers exhausted during answer generation: %s", exc)
         raw = "\n\n".join(
             f"{s['section']} {s['title_de']}:\n{s['text_de']}" for s in sections
         )
+        answer_confidence = _compute_confidence(len(sections), True)
         return ChatResponse(
             answer=(
                 f"{i18n.ALL_PROVIDERS_EXHAUSTED_PREFIX[language]}\n\n"
@@ -236,6 +274,8 @@ def chat_endpoint(req: ChatRequest):
             cited_sections=sections,
             degraded=True,
             language=language,
+            confidence=answer_confidence,
+            source_summary=_summarize_sources(sections),
         )
 
 

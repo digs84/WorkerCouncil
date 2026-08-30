@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 .env
 data/*.json
+node_modules/
+# Generated at build time by scripts/fetch-laws.mjs from netlify-build/templates/ -
+# not the source of truth, don't commit.
+netlify/edge-functions/*.js

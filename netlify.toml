@@ -1,0 +1,22 @@
+# Netlify deploy config for the Worker Council Assistant.
+#
+# Architecture: the chat UI/PWA is static (served from `publish`), and the
+# API (/api/chat, /api/health, /api/sources) is implemented as Netlify Edge
+# Functions in netlify/edge-functions/ - see that directory's generated
+# files and netlify-build/templates/ for the source templates they're
+# built from. Netlify has no Python runtime, so this is a JS port of the
+# FastAPI backend in app/ (kept as the source of truth / local-dev version
+# - see README.md).
+#
+# The build step downloads and parses both laws (BetrVG, BDSG) from
+# gesetze-im-internet.de and bakes the result directly into the generated
+# edge functions, since Edge Functions have no bundled-file/JSON-import
+# support and no shared runtime disk to read a data file from at request
+# time (see scripts/fetch-laws.mjs).
+
+[build]
+  command = "npm install && npm run fetch-laws"
+  publish = "public"
+
+[build.environment]
+  NODE_VERSION = "20"

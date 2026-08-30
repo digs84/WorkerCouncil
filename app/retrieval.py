@@ -81,6 +81,9 @@ GLOSSARY: dict[str, list[str]] = {
     "right to access": ["auskunft"],
     "right to erasure": ["löschung"],
     "deletion": ["löschung"],
+    "delete": ["löschung"],
+    "erase": ["löschung"],
+    "erasure": ["löschung"],
     "right to information": ["auskunftsrecht", "auskunft"],
     "supervisory authority": ["aufsichtsbehörde"],
     "video surveillance": ["videoüberwachung"],
@@ -180,12 +183,30 @@ def get_sections_by_number(refs: list[tuple[str, str]]) -> list[dict]:
 
 
 def _expand_query_terms(query: str) -> set[str]:
+    from app.i18n import detect_language  # local import: avoids a cycle at module load time
+
     q = query.lower()
-    terms = set(re.findall(r"[a-zäöüß]+", q))
+    terms: set[str] = set()
+    # Only add the query's own raw words when it's German: they're then
+    # genuine German legal terms worth substring-matching directly. For an
+    # English query, a raw word like "and" or "does" would otherwise
+    # spuriously substring-match unrelated German words (e.g. "and" inside
+    # "andere"/"anderen"/"Gegenstand"), swamping the real signal from the
+    # glossary below with noise.
+    if detect_language(query) == "de":
+        terms.update(re.findall(r"[a-zäöüß]+", q))
     for phrase, de_terms in GLOSSARY.items():
         if phrase in q:
             terms.update(de_terms)
     return terms
+
+
+# Caps how many times any single term can count towards a section's score.
+# Without this, a broad glossary term like "employer" -> "arbeitgeber"
+# (ubiquitous in legal text) can rack up a huge raw count and drown out a
+# rarer, far more diagnostic term like "löschung" that only appears a
+# handful of times but pinpoints the actually relevant section.
+MAX_TERM_CONTRIBUTION = 4
 
 
 def lexical_search(query: str, top_k: int = 5) -> list[dict]:
@@ -201,7 +222,7 @@ def lexical_search(query: str, top_k: int = 5) -> list[dict]:
     scored = []
     for s in data["sections"]:
         haystack = f"{s['title_de']} {s['text_de']}".lower()
-        score = sum(haystack.count(t) for t in terms if len(t) > 2)
+        score = sum(min(haystack.count(t), MAX_TERM_CONTRIBUTION) for t in terms if len(t) > 2)
         if score > 0:
             scored.append((score, s))
 

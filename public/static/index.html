@@ -259,68 +259,6 @@
     color: var(--muted);
   }
   .sections b { color: var(--gold); }
-  .source-toggle {
-    margin-top: 10px;
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--gold);
-    border-radius: 999px;
-    padding: 6px 12px;
-    font-size: 0.76rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .source-toggle:hover { border-color: var(--gold); }
-  .source-excerpts {
-    display: none;
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px dashed var(--border);
-  }
-  .source-excerpts.visible { display: block; }
-  .source-excerpt-item {
-    margin-bottom: 12px;
-    padding: 8px 10px;
-    border-radius: 10px;
-    background: rgba(255,255,255,0.02);
-    border: 1px solid var(--border);
-  }
-  .source-excerpt-item .heading {
-    color: var(--gold);
-    font-weight: 700;
-    font-size: 0.76rem;
-    margin-bottom: 6px;
-  }
-  .source-excerpt-item .body {
-    color: var(--text);
-    font-size: 0.8rem;
-    line-height: 1.5;
-    white-space: pre-wrap;
-  }
-  .copy-row {
-    margin-top: 10px;
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-  .copy-btn {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--gold);
-    border-radius: 999px;
-    padding: 6px 12px;
-    font-size: 0.76rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .copy-btn:hover { border-color: var(--gold); }
-  .copy-toast {
-    display: none;
-    font-size: 0.72rem;
-    color: var(--gold);
-  }
-  .copy-toast.visible { display: inline; }
   .followups {
     margin-top: 10px;
     padding-top: 10px;
@@ -573,85 +511,7 @@ function addMessage(text, role, opts = {}) {
       .join('; ');
     box.appendChild(document.createTextNode(summary));
     div.appendChild(box);
-
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'source-toggle';
-    toggle.textContent = 'Show source excerpt';
-    const excerptBox = document.createElement('div');
-    excerptBox.className = 'source-excerpts';
-
-    opts.sections.forEach((s) => {
-      const item = document.createElement('div');
-      item.className = 'source-excerpt-item';
-      const heading = document.createElement('div');
-      heading.className = 'heading';
-      heading.textContent = `${s.section || 'Section'}${s.law_abbreviation ? ` · ${s.law_abbreviation}` : ''}`;
-      const body = document.createElement('div');
-      body.className = 'body';
-      body.textContent = s.text_de || s.text || 'No text excerpt available for this section.';
-      item.appendChild(heading);
-      item.appendChild(body);
-      excerptBox.appendChild(item);
-    });
-
-    toggle.onclick = () => {
-      const isVisible = excerptBox.classList.toggle('visible');
-      toggle.textContent = isVisible ? 'Hide source excerpt' : 'Show source excerpt';
-    };
-
-    div.appendChild(toggle);
-    div.appendChild(excerptBox);
   }
-
-  if (opts.confidence || opts.sourceSummary || opts.degraded !== undefined) {
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    const parts = [];
-    if (opts.confidence) parts.push(`Confidence: ${opts.confidence}`);
-    if (opts.degraded) parts.push('Degraded mode: yes');
-    if (opts.sourceSummary) parts.push(`Source: ${opts.sourceSummary}`);
-    meta.textContent = parts.join(' • ');
-    div.appendChild(meta);
-  }
-
-  const copyRow = document.createElement('div');
-  copyRow.className = 'copy-row';
-  const copyBtn = document.createElement('button');
-  copyBtn.type = 'button';
-  copyBtn.className = 'copy-btn';
-  copyBtn.textContent = 'Copy answer';
-  const toast = document.createElement('span');
-  toast.className = 'copy-toast';
-  toast.textContent = 'Copied';
-
-  const textToCopy = (typeof text === 'string' ? text : '')
-    .replace(/\n---\n.*$/s, '')
-    .trim();
-
-  const copyContent = (() => {
-    if (!opts.sections || !opts.sections.length) return textToCopy;
-    const sectionList = [...new Map(opts.sections.map((s) => [s.section || 'Section', s])).values()]
-      .map((s) => `${s.section || 'Section'}${s.law_abbreviation ? ` (${s.law_abbreviation})` : ''}`)
-      .join(', ');
-    return `${textToCopy}\n\nSources: ${sectionList}`;
-  })();
-
-  copyBtn.onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(copyContent);
-      toast.classList.add('visible');
-      setTimeout(() => toast.classList.remove('visible'), 1200);
-    } catch (err) {
-      toast.textContent = 'Copy failed';
-      toast.classList.add('visible');
-      setTimeout(() => { toast.textContent = 'Copied'; toast.classList.remove('visible'); }, 1200);
-    }
-  };
-
-  copyRow.appendChild(copyBtn);
-  copyRow.appendChild(toast);
-  div.appendChild(copyRow);
 
   if (opts.followups && opts.followups.length) {
     const box = document.createElement('div');
@@ -821,21 +681,12 @@ form.addEventListener('submit', async (e) => {
       return;
     }
 
-    addMessage(data.answer, 'bot', {
-      sections: data.cited_sections,
-      followups: data.follow_up_questions,
-      confidence: data.confidence,
-      degraded: data.degraded,
-      sourceSummary: data.source_summary,
-    });
+    addMessage(data.answer, 'bot', { sections: data.cited_sections, followups: data.follow_up_questions });
     saveRecent({
       question,
       answer: data.answer,
       sections: data.cited_sections,
       followups: data.follow_up_questions,
-      confidence: data.confidence,
-      degraded: data.degraded,
-      sourceSummary: data.source_summary,
       time: Date.now(),
     });
   } catch (err) {
@@ -856,9 +707,7 @@ form.addEventListener('submit', async (e) => {
 // ---------------------------------------------------------------------
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').then((reg) => {
-      reg.update();
-    }).catch((err) => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
       console.warn('Service worker registration failed:', err);
     });
   });
