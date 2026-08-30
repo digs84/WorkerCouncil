@@ -127,6 +127,49 @@ test(
 );
 
 test(
+  "fast headers but slow body -> still bounded by the per-hop timeout",
+  // Pin to a single hop via LLM_HOP_ORDER: GROQ_API_KEY alone would try
+  // both Groq models in sequence (each correctly respecting its own
+  // timeout), which is fine but muddies this test's timing assertion.
+  withEnv({ GROQ_API_KEY: "fake", LLM_HOP_ORDER: "groq:openai/gpt-oss-120b" }, async () => {
+    // Regression test for a real bug: fetch() resolves as soon as HTTP
+    // headers arrive, but the actual answer streams in via the body,
+    // which can take much longer (the model is still generating). The
+    // timer used to get cleared right after fetch() settled, leaving
+    // resp.json() completely unbounded - a live request was observed
+    // taking 39s total despite fetch() itself resolving in 650ms. This
+    // mocks exactly that shape: instant headers, a body that only
+    // resolves after a delay longer than the per-hop timeout, but reacts
+    // to the same AbortSignal fetch() was given.
+    globalThis.fetch = async (url, opts) => ({
+      status: 200,
+      text: async () => "",
+      json: () =>
+        new Promise((resolve, reject) => {
+          const bodyDelayMs = 20000; // longer than the ~15s per-hop timeout
+          const t = setTimeout(
+            () => resolve({ choices: [{ message: { content: "too-late answer" } }] }),
+            bodyDelayMs
+          );
+          opts.signal.addEventListener("abort", () => {
+            clearTimeout(t);
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    });
+    const handler = await importHandler();
+    const start = Date.now();
+    const { status, data } = await postQuestion(handler, "Test question about works councils");
+    const elapsed = Date.now() - start;
+    assert.equal(status, 200);
+    assert.equal(data.degraded, true, "should degrade, not wait out the slow body");
+    // Bounded near the ~15s per-hop timeout, not the 20s body delay - if
+    // the old bug were back, this would take ~20s+ instead.
+    assert.ok(elapsed < 18000, `expected < 18s (per-hop timeout, not the 20s body delay), took ${elapsed}ms`);
+  })
+);
+
+test(
   "every hop hanging -> degrades within a safe time budget instead of hanging forever",
   withEnv({ GROQ_API_KEY: "fake", GEMINI_API_KEY: "fake" }, async () => {
     globalThis.fetch = async (url, opts) =>
@@ -140,6 +183,10 @@ test(
     assert.equal(status, 200);
     assert.equal(data.degraded, true);
     assert.ok(data.cited_sections.length > 0);
-    assert.ok(elapsed < 36000, `expected < 36s, took ${elapsed}ms`);
+    // A real request was observed being killed by Netlify itself at ~36s
+    // total even with a 33s internal budget - this budget was tightened
+    // to 20s specifically to leave a large safety margin under that
+    // observed failure point, not just the documented ~40s ceiling.
+    assert.ok(elapsed < 24000, `expected < 24s, took ${elapsed}ms`);
   })
 );

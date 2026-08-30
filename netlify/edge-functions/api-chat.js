@@ -99,11 +99,15 @@ class AllProvidersExhaustedError extends Error {}
 
 const RATE_LIMIT_STATUS = new Set([429]);
 const AUTH_STATUS = new Set([401, 403]);
-// Generous per-hop timeout: real Groq/Gemini calls have been observed
-// taking up to ~25-30s on their own (model "thinking" overhead), and
-// since retrieval no longer costs a separate LLM call (see file header),
-// the full deadline budget is available for this one call.
-const DEFAULT_HOP_TIMEOUT_MS = 25000;
+// A live request was observed being killed by Netlify itself ("the edge
+// function timed out") at ~36s total - tighter than the ~40s response-
+// header ceiling this was originally sized against, most likely because
+// cold-start/module-init overhead (parsing the embedded law data, etc.)
+// happens before this file's own Date.now() budget tracking even starts,
+// so it isn't counted against DEADLINE_BUDGET_MS below. These are sized
+// with a large safety margin under that observed failure point rather
+// than the documented ceiling, since the real one clearly runs tighter.
+const DEFAULT_HOP_TIMEOUT_MS = 15000;
 const MIN_HOP_BUDGET_MS = 3000;
 const SAFETY_MARGIN_MS = 500;
 
@@ -122,16 +126,45 @@ async function callOneHop(providerName, model, messages, temperature, maxTokens,
   };
   const body = { model, messages, temperature, max_tokens: maxTokens };
 
+  // The timer must stay live until the response body is fully read, not
+  // just until fetch() resolves: fetch() resolves as soon as headers
+  // arrive, but the body - the actual generated answer - can keep
+  // streaming in well after that, especially for a long completion. A
+  // real request was observed with a 650ms fetch() but a 39s total,
+  // because the timer here used to get cleared right after fetch()
+  // settled, leaving resp.json() completely unbounded. Aborting the same
+  // controller while a body read is in progress makes that read reject
+  // too (standard Fetch behavior), so keeping the timer alive through the
+  // whole try block - fetch AND body parsing - actually bounds the total.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let resp;
   try {
-    resp = await fetch(url, {
+    const resp = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+
+    if (RATE_LIMIT_STATUS.has(resp.status)) {
+      throw new Error(`${providerName}:${model} rate-limited (HTTP 429)`);
+    }
+    if (AUTH_STATUS.has(resp.status)) {
+      throw new Error(`${providerName}:${model} auth failed (HTTP ${resp.status}) - check the API key`);
+    }
+    if (resp.status >= 400) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`${providerName}:${model} HTTP ${resp.status}: ${text.slice(0, 300)}`);
+    }
+
+    const data = await resp.json();
+    const content = data && data.choices && data.choices[0] && data.choices[0].message
+      ? data.choices[0].message.content
+      : undefined;
+    if (typeof content !== "string") {
+      throw new Error(`${providerName}:${model} returned an unexpected response shape`);
+    }
+    return content;
   } catch (err) {
     if (err.name === "AbortError") {
       throw new Error(`${providerName}:${model} timed out after ${timeoutMs}ms`);
@@ -140,26 +173,6 @@ async function callOneHop(providerName, model, messages, temperature, maxTokens,
   } finally {
     clearTimeout(timer);
   }
-
-  if (RATE_LIMIT_STATUS.has(resp.status)) {
-    throw new Error(`${providerName}:${model} rate-limited (HTTP 429)`);
-  }
-  if (AUTH_STATUS.has(resp.status)) {
-    throw new Error(`${providerName}:${model} auth failed (HTTP ${resp.status}) - check the API key`);
-  }
-  if (resp.status >= 400) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`${providerName}:${model} HTTP ${resp.status}: ${text.slice(0, 300)}`);
-  }
-
-  const data = await resp.json();
-  const content = data && data.choices && data.choices[0] && data.choices[0].message
-    ? data.choices[0].message.content
-    : undefined;
-  if (typeof content !== "string") {
-    throw new Error(`${providerName}:${model} returned an unexpected response shape`);
-  }
-  return content;
 }
 
 async function chatCompletion(messages, { temperature = 0.2, maxTokens = 900, deadline } = {}) {
@@ -498,9 +511,10 @@ export default async (request) => {
   const language = detectLanguage(question);
   const disclaimer = DISCLAIMER[language];
 
-  // Netlify Edge Functions must send response headers within ~40s; keep a
-  // safety margin under that for the one LLM call this makes.
-  const DEADLINE_BUDGET_MS = 33000;
+  // A real request was killed by Netlify at ~36s total even though this
+  // budget was 33s - see the note above DEFAULT_HOP_TIMEOUT_MS. Sized well
+  // under that observed failure point, not the documented ~40s ceiling.
+  const DEADLINE_BUDGET_MS = 20000;
   const deadline = Date.now() + DEADLINE_BUDGET_MS;
 
   try {
