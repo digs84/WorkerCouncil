@@ -1,0 +1,18 @@
+# Render "Blueprint" - lets Render auto-configure the service when you
+# connect this repo, instead of clicking through every setting by hand.
+# See README.md "Deploy the shared backend" for the step-by-step.
+services:
+  - type: web
+    name: worker-council-assistant
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      # sync: false = Render will prompt you to type the value in its
+      # dashboard instead of storing it in this file / your git repo.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
