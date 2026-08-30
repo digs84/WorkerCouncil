@@ -151,48 +151,65 @@ seconds, whereas real Groq/Gemini calls have been observed taking up to
    instead of Netlify killing the request with no answer at all.
 
 The law text itself is downloaded and parsed the same way as the Render
-path, just once per build (see `scripts/fetch-laws.mjs`, a Node port of
-`scripts/fetch_betrvg.py` / `scripts/fetch_bdsg.py`), and baked directly
-into the generated edge functions - Edge Functions have no bundled-file
-or JSON-import support and no shared runtime disk to read a data file
-from at request time.
+path (see `scripts/fetch-laws.mjs`, a Node port of `scripts/fetch_betrvg.py`
+/ `scripts/fetch_bdsg.py`) and baked directly into the generated edge
+functions - Edge Functions have no bundled-file or JSON-import support
+and no shared runtime disk to read a data file from at request time.
+
+**Unlike the Render path, this download does NOT happen on every
+deploy.** Netlify's build servers get a TCP connect timeout reaching
+gesetze-im-internet.de (confirmed via the actual error - not a DNS or
+IPv6 routing issue, the site appears to block Netlify's build IP ranges
+outright), so a build-time fetch simply can't work there. Since the law
+text changes rarely, the practical fix is running the fetch **locally**
+(where the site is reachable) and committing the result -
+`netlify/edge-functions/*.js` is checked into this repo rather than
+gitignored, specifically for this reason. Netlify just deploys whatever
+is committed, with no build command needed at all.
 
 ### Steps
 
 1. Get your free API key(s) - same as step 1 in Part 1 above.
-2. Push this project to GitHub - same as step 2 in Part 1 above.
+2. Push this project to GitHub - same as step 2 in Part 1 above (the
+   generated `netlify/edge-functions/*.js` is already committed, so
+   nothing further needs to run before deploying).
 3. Sign up / log in at [netlify.com](https://netlify.com) (free, no
    card). **Add new site** → **Import an existing project** → pick your
-   GitHub repo. Netlify reads `netlify.toml` automatically (build
-   command `npm install && npm run fetch-laws`, publish directory
-   `public`).
-4. Before the first deploy, go to **Site configuration → Environment
-   variables** and add your API key(s) (`GROQ_API_KEY`, `GEMINI_API_KEY`,
-   `OPENROUTER_API_KEY` - leave any you don't have blank). **Set the
-   scope to include Functions** - variables scoped only to the build
-   won't be visible to the edge functions at request time.
-5. Deploy. Watch the build log for the "Wrote N sections..." lines from
-   `scripts/fetch-laws.mjs` to confirm both laws downloaded.
+   GitHub repo. Netlify reads `netlify.toml` automatically (publish
+   directory `public`, no build command).
+4. Go to **Site configuration → Environment variables** and add your API
+   key(s) (`GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` - leave
+   any you don't have blank). **Set the scope to include Functions** -
+   variables scoped only to the build won't be visible to the edge
+   functions at request time.
+5. Deploy. There's nothing to watch for in the build log this time - it
+   just publishes `public/` and picks up the already-committed edge
+   functions.
 6. You get a URL like `https://your-site-name.netlify.app` - that's the
    app, same as the Render URL in Part 1.
 
 ### Updating later
 
-Push new commits and Netlify redeploys automatically, re-running
-`scripts/fetch-laws.mjs` (so the law text and generated edge functions
-are always rebuilt fresh, never stale). To change an API key, edit it
-under Site configuration → Environment variables - no code change or
-redeploy trigger needed, it takes effect on the next request.
+Push new commits and Netlify redeploys automatically. To change an API
+key, edit it under Site configuration → Environment variables - no code
+change or redeploy trigger needed, it takes effect on the next request.
 
-### Editing the Netlify backend's logic
+**To refresh the law text** (e.g. after a legal amendment) or **to edit
+the backend's logic**: `netlify/edge-functions/*.js` are generated files
+- edit the templates in `netlify-build/templates/` instead, then run
+locally:
 
-`netlify/edge-functions/*.js` are **generated files** (gitignored, not
-the source of truth) - edit the templates in `netlify-build/templates/`
-instead and run `npm run fetch-laws` to regenerate, or just push and let
-Netlify's build do it. This keeps the law-text-embedding step (which
-only a build script can do - see above) and the actual request-handling
-logic in one place per function, instead of a separate templating layer
-on top of hand-maintained files.
+```bash
+npm install
+npm run fetch-laws   # re-downloads both laws and regenerates netlify/edge-functions/*.js
+git add netlify/edge-functions data
+git commit -m "Refresh law text / update Netlify backend logic"
+git push
+```
+
+This has to run locally (or anywhere with a normal network path to
+gesetze-im-internet.de) and be committed - it cannot run as a Netlify
+build step, per the note above.
 
 ---
 
@@ -289,15 +306,18 @@ To test the Netlify (Edge Functions) version locally instead, via the
 
 ```bash
 npm install
+npm run fetch-laws   # only needed if netlify/edge-functions/*.js isn't already checked out
 npm install -g netlify-cli
 netlify dev
 ```
 
-`netlify dev` runs `netlify.toml`'s build command (which downloads and
-embeds the law text - see Part 1b above) and serves the site with the
-edge functions live at http://localhost:8888. Environment variables for
-this local run come from `netlify env:set` / the Netlify CLI's own login
-context, not from `.env` (that file is only read by the Python version).
+`netlify.toml` has no build command (see Part 1b above for why), so
+`netlify dev` just serves whatever's already in `netlify/edge-functions/`
+- run `npm run fetch-laws` yourself first if you want to refresh it.
+This serves the site with the edge functions live at
+http://localhost:8888. Environment variables for this local run come
+from `netlify env:set` / the Netlify CLI's own login context, not from
+`.env` (that file is only read by the Python version).
 
 Then open http://127.0.0.1:8000 (Python) or http://localhost:8888
 (Netlify CLI). Note: installing a PWA generally
@@ -391,7 +411,7 @@ worker-council-app/
 ├── netlify-build/
 │   ├── templates/                  Source-of-truth templates for the generated edge functions
 │   └── test/                        Node test runner tests for the generated edge functions
-├── netlify/edge-functions/         Generated by scripts/fetch-laws.mjs (gitignored)
+├── netlify/edge-functions/         Generated by scripts/fetch-laws.mjs, committed (see Part 1b)
 ├── public/                          Static frontend Netlify serves (mirrors app/static/)
 ├── package.json
 ├── .env.example

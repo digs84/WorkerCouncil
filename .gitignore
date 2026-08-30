@@ -5,6 +5,8 @@ __pycache__/
 .env
 data/*.json
 node_modules/
-# Generated at build time by scripts/fetch-laws.mjs from netlify-build/templates/ -
-# not the source of truth, don't commit.
-netlify/edge-functions/*.js
+# netlify/edge-functions/*.js IS committed (not gitignored) even though it's
+# generated from netlify-build/templates/ by scripts/fetch-laws.mjs - see the
+# note in netlify.toml for why (Netlify's build servers can't reach
+# gesetze-im-internet.de, so the fetch has to happen locally and get committed
+# instead of running on every Netlify build).

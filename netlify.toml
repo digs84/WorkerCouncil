@@ -8,15 +8,20 @@
 # FastAPI backend in app/ (kept as the source of truth / local-dev version
 # - see README.md).
 #
-# The build step downloads and parses both laws (BetrVG, BDSG) from
-# gesetze-im-internet.de and bakes the result directly into the generated
-# edge functions, since Edge Functions have no bundled-file/JSON-import
-# support and no shared runtime disk to read a data file from at request
-# time (see scripts/fetch-laws.mjs).
-
+# IMPORTANT: netlify/edge-functions/*.js is committed, not regenerated at
+# build time. It's baked from both laws' text (BetrVG, BDSG), downloaded
+# from gesetze-im-internet.de by scripts/fetch-laws.mjs - Edge Functions
+# have no bundled-file/JSON-import support and no shared runtime disk to
+# read a data file from at request time, so the data has to be embedded as
+# a JS literal in the deployed function. That download was originally a
+# build-time step here too, but Netlify's build servers get a TCP connect
+# timeout reaching gesetze-im-internet.de (confirmed: not a DNS/IPv6 issue,
+# the site appears to block Netlify's build IP ranges outright), so there's
+# nothing a build script running there can do about it. The law text
+# changes rarely, so the practical fix is running `npm run fetch-laws`
+# locally (where the site IS reachable) and committing the regenerated
+# netlify/edge-functions/*.js - see README.md "Part 1b" for the update
+# workflow. No build command is needed - there's nothing left to do that
+# hasn't already happened locally.
 [build]
-  command = "npm install && npm run fetch-laws"
   publish = "public"
-
-[build.environment]
-  NODE_VERSION = "20"
