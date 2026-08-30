@@ -223,6 +223,11 @@ const ALL_SECTIONS = [{"order":1,"section":"§ 1","title_de":"Errichtung von Bet
 const GLOSSARY = {
   "works council": ["betriebsrat"],
   "worker council": ["betriebsrat"],
+  // "BR" is a very common shorthand for Betriebsrat - handled as an
+  // exact-whole-word match in expandQueryTerms() below, since a phrase
+  // this short would false-positive constantly under prefix matching.
+  br: ["betriebsrat"],
+  education: ["schulung", "bildung", "fortbildung"],
   election: ["wahl", "wahlen"],
   termination: ["kündigung"],
   dismissal: ["kündigung", "entlassung"],
@@ -306,7 +311,11 @@ function expandQueryTerms(query, language) {
       // "works council") happens to be common to nearly every section,
       // making the ranking essentially noise.
       matched = queryWords.some((w) => {
-        if (w.length < 4 || phrase.length < 4) return false;
+        // Short keys (e.g. "br" for Betriebsrat) require an exact
+        // whole-word match - prefix matching on something this short
+        // would match all sorts of unrelated words.
+        if (phrase.length < 4) return w === phrase;
+        if (w.length < 4) return false;
         let i = 0;
         while (i < w.length && i < phrase.length && w[i] === phrase[i]) i++;
         return i >= 4;

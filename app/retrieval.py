@@ -41,6 +41,12 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 GLOSSARY: dict[str, list[str]] = {
     "works council": ["betriebsrat"],
     "worker council": ["betriebsrat"],
+    # "BR" is a very common shorthand for Betriebsrat - handled as an
+    # exact-whole-word match in _expand_query_terms() below, since a
+    # phrase this short would false-positive constantly under prefix
+    # matching.
+    "br": ["betriebsrat"],
+    "education": ["schulung", "bildung", "fortbildung"],
     "election": ["wahl", "wahlen"],
     "termination": ["kündigung"],
     "dismissal": ["kündigung", "entlassung"],
@@ -219,9 +225,12 @@ def _expand_query_terms(query: str) -> set[str]:
             # glossary) loses its only discriminating term and falls back
             # to whatever generic word (like "works council") happens to
             # be common to nearly every section, making the ranking
-            # essentially noise.
+            # essentially noise. Short keys (e.g. "br" for Betriebsrat)
+            # require an exact whole-word match instead - prefix matching
+            # on something this short would match all sorts of unrelated
+            # words.
             matched = any(
-                len(w) >= 4 and len(phrase) >= 4 and _common_prefix_len(w, phrase) >= 4
+                (w == phrase if len(phrase) < 4 else len(w) >= 4 and _common_prefix_len(w, phrase) >= 4)
                 for w in query_words
             )
         if matched:
