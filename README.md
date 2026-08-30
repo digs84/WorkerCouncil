@@ -449,3 +449,9 @@ npm test
 
 Mocks `fetch` and the `Netlify` global, so no real API keys or a live
 Netlify/Deno environment are needed either.
+
+---
+
+## Author
+
+Created by Digvijay Ray.
