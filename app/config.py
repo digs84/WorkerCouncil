@@ -34,9 +34,39 @@ class ProviderSpec:
     api_key_env: str
     default_models: list[str]
     extra_headers: dict[str, str] = field(default_factory=dict)
+    extra_body: dict = field(default_factory=dict)
+    # Per-provider override for app.llm_router.REQUEST_TIMEOUT_SECONDS.
+    # None means "use the module default".
+    timeout_seconds: int | None = None
 
 
 PROVIDERS: dict[str, ProviderSpec] = {
+    "ollama": ProviderSpec(
+        name="ollama",
+        # Ollama's OpenAI-compatible endpoint - only reachable when Ollama
+        # is installed and running on THIS machine (or wherever
+        # OLLAMA_BASE_URL points). It doesn't check the Authorization
+        # header at all, so any non-empty OLLAMA_API_KEY value just serves
+        # as this app's own "hop is enabled" switch (see .env.example) -
+        # there's no real key to sign up for. Local-only: this hop is
+        # useless to the deployed Netlify site, which can't reach your
+        # machine's localhost - see app/config.py module docstring.
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+        api_key_env="OLLAMA_API_KEY",
+        # These are just reasonable guesses - replace with whatever model(s)
+        # you've actually pulled (`ollama pull <name>`), or override via
+        # LLM_HOP_ORDER. A wrong name here just 404s and hops on to Groq/etc,
+        # same as any other misconfigured hop.
+        default_models=[
+            "llama3.1",
+            "qwen2.5",
+        ],
+        # CPU-only local inference measured live at ~14s for a 2-token
+        # reply once warm, and 30-70s+ including a cold model load - far
+        # past the 30s default that's sized for cloud APIs. A real answer
+        # (~150-250 tokens, longer prompt) needs much more room than that.
+        timeout_seconds=120,
+    ),
     "groq": ProviderSpec(
         name="groq",
         base_url="https://api.groq.com/openai/v1",
@@ -45,6 +75,14 @@ PROVIDERS: dict[str, ProviderSpec] = {
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
         ],
+        # gpt-oss models spend a variable, sometimes huge, chunk of
+        # max_tokens on hidden reasoning before writing any visible answer -
+        # confirmed live: a real request burned 355 of 559 completion tokens
+        # on reasoning, and with a longer real prompt (multiple retrieved §
+        # excerpts) that reasoning alone consumed the entire budget, cutting
+        # the response off with an EMPTY visible answer. "low" cut reasoning
+        # tokens 355->44 (8x) with no loss in answer quality or accuracy.
+        extra_body={"reasoning_effort": "low"},
     ),
     "gemini": ProviderSpec(
         name="gemini",
@@ -69,15 +107,39 @@ PROVIDERS: dict[str, ProviderSpec] = {
             "HTTP-Referer": "https://localhost/worker-council-app",
             "X-Title": "Worker Council Assistant (Germany)",
         },
+        # Confirmed live: without this, a free reasoning model on OpenRouter
+        # sometimes puts its ENTIRE chain-of-thought straight into the
+        # visible "content" field instead of the separate "reasoning" field
+        # (not consistently - the same model can behave correctly on a
+        # simple prompt and leak on a longer, real one), producing a
+        # nonsense wall-of-thinking-steps answer instead of an actual reply.
+        # "exclude" tells OpenRouter to strip reasoning server-side
+        # regardless of which field the underlying model tries to put it
+        # in, which also cut total tokens ~40% in testing (628->373).
+        extra_body={"reasoning": {"exclude": True}},
     ),
 }
 
 # Gemini's free tier is only 20 requests/day per model (confirmed via its
 # own 429 response), so trying it before OpenRouter (20/min, 50/day) just
 # wastes a hop attempt on something almost always exhausted. Groq first
-# (best free-tier limits), OpenRouter second, Gemini last as a rarely-
-# useful final fallback.
-PROVIDER_PRIORITY = ["groq", "openrouter", "gemini"]
+# (best free-tier limits), OpenRouter second, Gemini third.
+#
+# Ollama last, not first: it's genuinely unlimited, but measured live on
+# CPU-only hardware at ~14s just for a trivial 2-token reply (a real answer
+# took 70s+ end to end and STILL fell through to Groq anyway) - trying it
+# before the cloud providers would add that latency to every single
+# question even though Groq/etc. almost always just work. As a last resort
+# after every rate-limited/cloud hop is exhausted, that latency is a fair
+# trade for a free answer instead of none. If your hardware is fast (GPU),
+# moving "ollama" first is reasonable - see timeout_seconds on its
+# ProviderSpec too.
+#
+# Cerebras was tried here too but dropped: its "free tier" returns HTTP 402
+# Payment Required on every model for a fresh account with no card on file,
+# so it wasn't actually usable without paying - see git history if this is
+# ever worth revisiting once/if that changes.
+PROVIDER_PRIORITY = ["groq", "openrouter", "gemini", "ollama"]
 
 
 # ---------------------------------------------------------------------------

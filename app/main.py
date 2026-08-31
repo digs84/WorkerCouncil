@@ -72,8 +72,22 @@ ANSWERER_SYSTEM_PROMPT = (
     "answer the question, say so plainly rather than guessing. Do not "
     "state opinions as certain legal conclusions - describe what the law "
     "says and note where a lawyer, works council, or data protection "
-    "officer should be consulted for a binding answer. Keep the answer "
-    "focused and avoid unnecessary repetition.\n\n"
+    "officer should be consulted for a binding answer. Lead with a direct "
+    "1-3 sentence answer to the actual question before any supporting "
+    "detail. Do not restate the question, do not pad with generic "
+    "throat-clearing, and do not hedge with 'it depends' or similar unless "
+    "the excerpts genuinely point in different directions for different "
+    "cases - if they clearly answer the question, just answer it. "
+    "Paraphrase the legal rule in the answer's own language rather than "
+    "quoting long verbatim passages of the original German text - a short "
+    "citation like '§ 87 BetrVG' is enough; only quote the German original "
+    "directly if the question specifically asks about exact wording. "
+    "Target roughly 80-150 words for the answer body, longer only if the "
+    "question genuinely requires listing several distinct rights, steps, "
+    "or exceptions (use a short list in that case). Do not add your own "
+    "'---' or similar separator line anywhere in the answer - the app "
+    "appends its own after your text. Keep the whole reply focused and "
+    "avoid unnecessary repetition.\n\n"
     "You MUST always end your reply with a follow-up section, even for a "
     "short answer: after your complete answer, on its own line write "
     f"exactly {FOLLOWUP_MARKER} and then, on the next line, a JSON array "
@@ -245,7 +259,19 @@ def chat_endpoint(req: ChatRequest):
                 ),
             },
         ]
-        result = chat(messages, temperature=0.2, max_tokens=1500)
+        result = chat(
+            messages,
+            temperature=0.2,
+            max_tokens=1500,
+            # A free reasoning model occasionally ignores the format
+            # instructions entirely and dumps raw chain-of-thought as the
+            # "answer" - a 200 OK with garbage content, which nothing above
+            # catches as an error. Every well-formed reply is required to
+            # end with FOLLOWUP_MARKER (see ANSWERER_SYSTEM_PROMPT), so its
+            # absence is a cheap, reliable signal that hop misbehaved -
+            # llm_router.chat() treats that like a failure and moves on.
+            is_valid=lambda text: FOLLOWUP_MARKER in text,
+        )
         answer_text, follow_ups = _split_answer_and_followups(result.text)
         answer = f"{answer_text}\n\n---\n{disclaimer}"
         answer_confidence = _compute_confidence(len(sections), False)

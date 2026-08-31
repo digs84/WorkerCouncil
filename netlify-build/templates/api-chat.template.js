@@ -29,6 +29,14 @@ const PROVIDERS = {
     baseUrl: "https://api.groq.com/openai/v1",
     apiKeyEnv: "GROQ_API_KEY",
     defaultModels: ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
+    // gpt-oss models spend a variable, sometimes huge, chunk of maxTokens
+    // on hidden reasoning before writing any visible answer - confirmed
+    // live: a real request burned 355 of 559 completion tokens on
+    // reasoning, and with a longer real prompt (multiple retrieved §
+    // excerpts) that reasoning alone consumed the entire budget, cutting
+    // the response off with an EMPTY visible answer. "low" cut reasoning
+    // tokens 355->44 (8x) with no loss in answer quality or accuracy.
+    extraBody: { reasoning_effort: "low" },
   },
   gemini: {
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -48,6 +56,16 @@ const PROVIDERS = {
       "HTTP-Referer": "https://localhost/worker-council-app",
       "X-Title": "Worker Council Assistant (Germany)",
     },
+    // Confirmed live: without this, a free reasoning model on OpenRouter
+    // sometimes puts its ENTIRE chain-of-thought straight into the visible
+    // "content" field instead of the separate "reasoning" field (not
+    // consistently - the same model can behave correctly on a simple
+    // prompt and leak on a longer, real one), producing a nonsense
+    // wall-of-thinking-steps answer instead of an actual reply. "exclude"
+    // tells OpenRouter to strip reasoning server-side regardless of which
+    // field the underlying model tries to put it in, which also cut total
+    // tokens ~40% in testing (628->373).
+    extraBody: { reasoning: { exclude: true } },
   },
 };
 // Gemini's free tier is only 20 requests/day per model (confirmed via its
@@ -55,6 +73,11 @@ const PROVIDERS = {
 // wastes a hop attempt on something almost always exhausted. Groq first
 // (best free-tier limits), OpenRouter second, Gemini last as a rarely-
 // useful final fallback.
+//
+// Cerebras was tried here too but dropped: its "free tier" returns HTTP 402
+// Payment Required on every model for a fresh account with no card on file,
+// so it wasn't actually usable without paying - see git history if this is
+// ever worth revisiting once/if that changes.
 const PROVIDER_PRIORITY = ["groq", "openrouter", "gemini"];
 
 // Trims whatever Netlify.env.get() returns before it's ever used - a key
@@ -124,7 +147,7 @@ async function callOneHop(providerName, model, messages, temperature, maxTokens,
     "Content-Type": "application/json",
     ...(spec.extraHeaders || {}),
   };
-  const body = { model, messages, temperature, max_tokens: maxTokens };
+  const body = { model, messages, temperature, max_tokens: maxTokens, ...(spec.extraBody || {}) };
 
   // The timer must stay live until the response body is fully read, not
   // just until fetch() resolves: fetch() resolves as soon as headers
@@ -175,7 +198,15 @@ async function callOneHop(providerName, model, messages, temperature, maxTokens,
   }
 }
 
-async function chatCompletion(messages, { temperature = 0.2, maxTokens = 900, deadline } = {}) {
+// isValid: optional check applied to a hop's returned text. A free
+// reasoning model occasionally ignores its format instructions and dumps
+// raw chain-of-thought as the "answer" instead - that's a 200 OK response
+// with garbage content, which the try/catch below can't catch since
+// nothing threw. When isValid(text) is false, that hop is treated like any
+// other failure and the next one is tried; if every hop fails validation,
+// the last (still best-effort) result is returned rather than erroring out
+// to the user.
+async function chatCompletion(messages, { temperature = 0.2, maxTokens = 900, deadline, isValid } = {}) {
   const hopOrder = getHopOrder();
   if (!hopOrder.length) {
     throw new AllProvidersExhaustedError(
@@ -187,6 +218,7 @@ async function chatCompletion(messages, { temperature = 0.2, maxTokens = 900, de
 
   const tried = [];
   let lastError = null;
+  let bestEffort = null;
 
   for (const [providerName, model] of hopOrder) {
     const remaining = deadline ? deadline - Date.now() : Infinity;
@@ -199,15 +231,30 @@ async function chatCompletion(messages, { temperature = 0.2, maxTokens = 900, de
     tried.push(hopLabel);
     try {
       const text = await callOneHop(providerName, model, messages, temperature, maxTokens, hopTimeout);
+      if (isValid && !isValid(text)) {
+        bestEffort = { text, provider: providerName, model };
+        continue;
+      }
       return { text, provider: providerName, model };
     } catch (err) {
       lastError = err;
     }
   }
 
+  // Every hop that actually responded gave back malformed output (e.g. a
+  // free reasoning model leaking raw chain-of-thought instead of a real
+  // answer) - showing that to the user would be worse than the existing
+  // AllProvidersExhaustedError fallback (raw excerpt text + an
+  // explanation), which the caller already handles gracefully. Treat this
+  // the same as every hop failing outright rather than surfacing garbage.
+  const malformedNote = bestEffort
+    ? ` Last hop returned malformed output (no follow-up marker) from ${bestEffort.provider}:${bestEffort.model}.`
+    : "";
+
   throw new AllProvidersExhaustedError(
-    `All ${tried.length} configured free-LLM hops failed or are rate-limited right now: ` +
-      `${tried.join(", ")}. Last error: ${lastError ? lastError.message : "none"}`
+    `All ${tried.length} configured free-LLM hops failed, were rate-limited, or returned ` +
+      `malformed output right now: ${tried.join(", ")}. Last error: ${lastError ? lastError.message : "none"}.` +
+      malformedNote
   );
 }
 
@@ -464,8 +511,22 @@ const ANSWERER_SYSTEM_PROMPT =
   "answer the question, say so plainly rather than guessing. Do not " +
   "state opinions as certain legal conclusions - describe what the law " +
   "says and note where a lawyer, works council, or data protection " +
-  "officer should be consulted for a binding answer. Keep the answer " +
-  "focused and avoid unnecessary repetition.\n\n" +
+  "officer should be consulted for a binding answer. Lead with a direct " +
+  "1-3 sentence answer to the actual question before any supporting " +
+  "detail. Do not restate the question, do not pad with generic " +
+  "throat-clearing, and do not hedge with 'it depends' or similar unless " +
+  "the excerpts genuinely point in different directions for different " +
+  "cases - if they clearly answer the question, just answer it. " +
+  "Paraphrase the legal rule in the answer's own language rather than " +
+  "quoting long verbatim passages of the original German text - a short " +
+  "citation like '§ 87 BetrVG' is enough; only quote the German original " +
+  "directly if the question specifically asks about exact wording. " +
+  "Target roughly 80-150 words for the answer body, longer only if the " +
+  "question genuinely requires listing several distinct rights, steps, " +
+  "or exceptions (use a short list in that case). Do not add your own " +
+  "'---' or similar separator line anywhere in the answer - the app " +
+  "appends its own after your text. Keep the whole reply focused and " +
+  "avoid unnecessary repetition.\n\n" +
   "You MUST always end your reply with a follow-up section, even for a " +
   "short answer: after your complete answer, on its own line write " +
   `exactly ${FOLLOWUP_MARKER} and then, on the next line, a JSON array ` +
@@ -530,10 +591,11 @@ export default async (request) => {
     // Wider net than the Python version's fallback (top_k=5): there's no
     // LLM selector call here to narrow candidates semantically first (see
     // file header), so lexical scoring alone is more likely to let a
-    // genuinely relevant section fall just outside the cutoff. 6 (rather
-    // than 8) trades a little of that recall margin for a smaller prompt -
-    // free-tier token/quota pressure matters more here than it did before.
-    const sections = lexicalSearch(question, language, 6);
+    // genuinely relevant section fall just outside the cutoff. Back to 8
+    // (was briefly cut to 6 for quota reasons) - the missing-context vague
+    // answers that caused cost more than the input-token increase does,
+    // since input tokens aren't what the free tiers actually meter tightly.
+    const sections = lexicalSearch(question, language, 8);
 
     if (!sections.length) {
       return jsonResponse({
@@ -555,7 +617,18 @@ export default async (request) => {
           content: `TARGET_LANGUAGE: ${language}\nEXCERPTS:\n${excerpts}\n\nQUESTION: ${question}`,
         },
       ];
-      const result = await chatCompletion(messages, { temperature: 0.2, maxTokens: 1500, deadline });
+      const result = await chatCompletion(messages, {
+        temperature: 0.2,
+        maxTokens: 1500,
+        deadline,
+        // Every well-formed reply is required to end with FOLLOWUP_MARKER
+        // (see ANSWERER_SYSTEM_PROMPT) - its absence is a cheap, reliable
+        // signal that this hop ignored the format instructions (e.g. a
+        // free reasoning model leaking raw chain-of-thought as the
+        // "answer"), so chatCompletion() treats that like a failure and
+        // moves on to the next hop.
+        isValid: (text) => text.includes(FOLLOWUP_MARKER),
+      });
       const [answerText, followUps] = splitAnswerAndFollowups(result.text);
       return jsonResponse({
         answer: `${answerText}\n\n---\n${disclaimer}`,

@@ -15,6 +15,7 @@ call and only swaps base_url / api_key / model / headers per hop.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import requests
@@ -71,9 +72,11 @@ def _call_one_hop(provider_name: str, model: str, messages: list[dict],
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        **spec.extra_body,
     }
 
-    resp = requests.post(url, headers=headers, json=body, timeout=REQUEST_TIMEOUT_SECONDS)
+    timeout = spec.timeout_seconds if spec.timeout_seconds is not None else REQUEST_TIMEOUT_SECONDS
+    resp = requests.post(url, headers=headers, json=body, timeout=timeout)
 
     if resp.status_code in RATE_LIMIT_STATUS:
         raise TimeoutError(f"{provider_name}:{model} rate-limited (HTTP 429)")
@@ -89,11 +92,24 @@ def _call_one_hop(provider_name: str, model: str, messages: list[dict],
         raise RuntimeError(f"{provider_name}:{model} returned an unexpected response shape: {data}") from exc
 
 
-def chat(messages: list[dict], temperature: float = 0.2, max_tokens: int = 900) -> ChatResult:
+def chat(
+    messages: list[dict],
+    temperature: float = 0.2,
+    max_tokens: int = 900,
+    is_valid: Callable[[str], bool] | None = None,
+) -> ChatResult:
     """Send a chat completion request, hopping across free providers/models
     until one succeeds.
 
     messages: standard OpenAI-style [{"role": "system"|"user"|"assistant", "content": "..."}]
+    is_valid: optional check applied to a hop's returned text. A free
+    reasoning model occasionally ignores its format instructions and dumps
+    raw chain-of-thought as the "answer" instead - that's a 200 OK response
+    with garbage content, which the normal error handling below can't catch
+    since nothing raised. When is_valid(text) is False, that hop is treated
+    like any other failure and the next one is tried; if every hop fails
+    validation, the last (still best-effort) result is returned rather than
+    erroring out to the user.
     """
     hop_order = get_hop_order()
     if not hop_order:
@@ -104,12 +120,19 @@ def chat(messages: list[dict], temperature: float = 0.2, max_tokens: int = 900) 
 
     tried: list[str] = []
     last_error: Exception | None = None
+    best_effort: ChatResult | None = None
 
     for provider_name, model in hop_order:
         hop_label = f"{provider_name}:{model}"
         tried.append(hop_label)
         try:
             text = _call_one_hop(provider_name, model, messages, temperature, max_tokens)
+            if is_valid is not None and not is_valid(text):
+                logger.warning(
+                    "Hop %s returned malformed/invalid output, hopping to next", hop_label
+                )
+                best_effort = ChatResult(text=text, provider=provider_name, model=model, hops_tried=list(tried))
+                continue
             logger.info("Answered via %s (tried before this: %s)", hop_label, tried[:-1] or "none")
             return ChatResult(text=text, provider=provider_name, model=model, hops_tried=tried)
         except TimeoutError as exc:
@@ -125,8 +148,23 @@ def chat(messages: list[dict], temperature: float = 0.2, max_tokens: int = 900) 
             last_error = exc
             continue
 
+    if best_effort is not None:
+        # Every hop that actually responded gave back malformed output (e.g.
+        # a free reasoning model leaking raw chain-of-thought instead of a
+        # real answer) - showing that to the user would be worse than the
+        # existing AllProvidersExhaustedError fallback (raw excerpt text +
+        # an explanation), which callers already handle gracefully. Treat
+        # this the same as every hop failing outright rather than surfacing
+        # garbage.
+        logger.warning(
+            "No hop passed validation (last invalid output from %s); "
+            "treating as exhausted rather than returning malformed content",
+            best_effort.provider + ":" + best_effort.model,
+        )
+
     raise AllProvidersExhaustedError(
-        f"All {len(tried)} configured free-LLM hops failed or are rate-limited "
-        f"right now: {', '.join(tried)}. Wait a minute and try again, or add "
-        f"another provider's free API key to .env. Last error: {last_error}"
+        f"All {len(tried)} configured free-LLM hops failed, were rate-limited, "
+        f"or returned malformed output right now: {', '.join(tried)}. Wait a "
+        f"minute and try again, or add another provider's free API key to "
+        f".env. Last error: {last_error}"
     )
