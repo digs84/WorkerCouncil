@@ -27,6 +27,7 @@ must pass (law_abbreviation, section) pairs, not bare section strings.
 from __future__ import annotations
 
 import json
+import math
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -48,6 +49,13 @@ GLOSSARY: dict[str, list[str]] = {
     "br": ["betriebsrat"],
     "education": ["schulung", "bildung", "fortbildung"],
     "election": ["wahl", "wahlen"],
+    # Confirmed live (Netlify JS twin of this dict): "how many members must
+    # a works council have?" only extracted "betriebsrat" (matches nearly
+    # every section) with no term pointing at § 9 ("Zahl der
+    # Betriebsratsmitglieder"), the section that actually answers it.
+    # "members" matches this via the existing fuzzy-prefix inflection rule
+    # (shares "member"/6 of 7 letters).
+    "member": ["mitglied", "mitglieder"],
     "termination": ["kündigung"],
     "dismissal": ["kündigung", "entlassung"],
     "firing": ["kündigung"],
@@ -58,7 +66,14 @@ GLOSSARY: dict[str, list[str]] = {
     "confidentiality": ["schweigepflicht", "geheimhaltung"],
     "protection": ["schutz"],
     "working hours": ["arbeitszeit"],
-    "overtime": ["mehrarbeit", "überstunden"],
+    # "arbeitszeit" added: confirmed live (Netlify JS twin of this dict)
+    # that § 87 BetrVG - the actual co-determination provision governing
+    # overtime - phrases it as "Verlängerung der Arbeitszeit" (extension
+    # of working hours) and never literally uses "Mehrarbeit"/
+    # "Überstunden", so without this term that section scored only on
+    # ubiquitous words and ranked ~75th of 126 candidates for an overtime
+    # question instead of near the top.
+    "overtime": ["mehrarbeit", "überstunden", "arbeitszeit"],
     "training": ["schulung", "bildung", "fortbildung"],
     "data protection": ["datenschutz"],
     "discrimination": ["diskriminierung", "benachteiligung"],
@@ -100,6 +115,22 @@ GLOSSARY: dict[str, list[str]] = {
     "damages": ["schadensersatz"],
     "third country transfer": ["drittstaat", "übermittlung"],
 }
+
+# Every single-word glossary key, e.g. "employer", "employee", "dismissal".
+# Used in _expand_query_terms to stop a query word that IS one of these (so
+# its meaning is already unambiguous) from also fuzzy-prefix-matching a
+# DIFFERENT key - see the comment there for why this matters.
+_SINGLE_WORD_KEYS = {phrase for phrase in GLOSSARY if " " not in phrase}
+
+# Keys that must match the query word exactly, never via the fuzzy prefix
+# rule below, because they're common English words that happen to share a
+# long prefix with a semantically unrelated word a user is likely to type.
+# Confirmed live (Netlify JS twin of this function): "personal" (from "my
+# personal data") fuzzy-matched "personnel" (shares "person"/6-7 letters),
+# injecting the German word "Personal" (workforce/staff) as a search term
+# and ranking a totally unrelated section ("Personalplanung"/workforce
+# planning) above the actually-correct data-protection section.
+_EXACT_ONLY_KEYS = {"personnel"}
 
 
 @lru_cache(maxsize=1)
@@ -229,10 +260,27 @@ def _expand_query_terms(query: str) -> set[str]:
             # require an exact whole-word match instead - prefix matching
             # on something this short would match all sorts of unrelated
             # words.
-            matched = any(
-                (w == phrase if len(phrase) < 4 else len(w) >= 4 and _common_prefix_len(w, phrase) >= 4)
-                for w in query_words
-            )
+            #
+            # Confirmed live (Netlify JS twin of this function): without
+            # the _SINGLE_WORD_KEYS check below, "employer" (itself the
+            # exact glossary key for "arbeitgeber") fuzzy-matched into the
+            # DIFFERENT key "employee" too - they share a 7-of-8-letter
+            # prefix ("employe...") - pulling "arbeitnehmer" (one of the
+            # single most common words in the whole law) into the search
+            # terms and burying the real match under irrelevant sections.
+            # Once a word exactly equals some OTHER single-word key, its
+            # meaning is already unambiguous, so it shouldn't also
+            # fuzzy-match a different one here.
+            def _word_matches(w: str) -> bool:
+                if len(phrase) < 4 or phrase in _EXACT_ONLY_KEYS:
+                    return w == phrase
+                if len(w) < 4:
+                    return False
+                if w != phrase and w in _SINGLE_WORD_KEYS:
+                    return False
+                return _common_prefix_len(w, phrase) >= 4
+
+            matched = any(_word_matches(w) for w in query_words)
         if matched:
             terms.update(de_terms)
     return terms
@@ -252,14 +300,30 @@ def lexical_search(query: str, top_k: int = 5) -> list[dict]:
     section's German title + text. Good enough to point a user at roughly
     the right §§ even with zero AI calls."""
     data = load_law_data()
-    terms = _expand_query_terms(query)
+    terms = [t for t in _expand_query_terms(query) if len(t) > 2]
     if not terms:
         return []
 
+    haystacks = [f"{s['title_de']} {s['text_de']}".lower() for s in data["sections"]]
+
+    # Poor-man's IDF: a term present in nearly every section (e.g.
+    # "arbeitgeber"/"betriebsrat" - present in roughly half to nearly all of
+    # them) is weak evidence of relevance and should barely move the
+    # ranking; a term present in only a handful of sections is a much
+    # stronger, more diagnostic signal. Confirmed live (Netlify JS twin of
+    # this function): without this, flat counting let a section that only
+    # matched ubiquitous words outscore the section that actually answers
+    # the question - § 87 BetrVG (the real co-determination provision for
+    # overtime) ranked 21st of 126 candidates; weighted by rarity it ranks
+    # 3rd, well within top_k.
+    idf = {}
+    for t in terms:
+        doc_freq = sum(1 for h in haystacks if t in h)
+        idf[t] = math.log((len(haystacks) + 1) / (doc_freq + 1)) + 1
+
     scored = []
-    for s in data["sections"]:
-        haystack = f"{s['title_de']} {s['text_de']}".lower()
-        score = sum(min(haystack.count(t), MAX_TERM_CONTRIBUTION) for t in terms if len(t) > 2)
+    for s, haystack in zip(data["sections"], haystacks):
+        score = sum(min(haystack.count(t), MAX_TERM_CONTRIBUTION) * idf[t] for t in terms)
         if score > 0:
             scored.append((score, s))
 

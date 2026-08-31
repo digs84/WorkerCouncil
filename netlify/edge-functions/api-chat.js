@@ -276,6 +276,12 @@ const GLOSSARY = {
   br: ["betriebsrat"],
   education: ["schulung", "bildung", "fortbildung"],
   election: ["wahl", "wahlen"],
+  // Confirmed live: "how many members must a works council have?" only
+  // extracted "betriebsrat" (matches nearly every section) with no term
+  // pointing at § 9 ("Zahl der Betriebsratsmitglieder"), the section that
+  // actually answers it. "members" matches this via the existing
+  // fuzzy-prefix inflection rule (shares "member"/6 of 7 letters).
+  member: ["mitglied", "mitglieder"],
   termination: ["kündigung"],
   dismissal: ["kündigung", "entlassung"],
   firing: ["kündigung"],
@@ -286,7 +292,13 @@ const GLOSSARY = {
   confidentiality: ["schweigepflicht", "geheimhaltung"],
   protection: ["schutz"],
   "working hours": ["arbeitszeit"],
-  overtime: ["mehrarbeit", "überstunden"],
+  // "arbeitszeit" added: confirmed live that § 87 BetrVG - the actual
+  // co-determination provision that governs overtime - phrases it as
+  // "Verlängerung der Arbeitszeit" (extension of working hours) and never
+  // literally uses "Mehrarbeit"/"Überstunden", so without this term that
+  // section scored only on ubiquitous words and ranked ~75th of 126
+  // candidates for an overtime question instead of near the top.
+  overtime: ["mehrarbeit", "überstunden", "arbeitszeit"],
   training: ["schulung", "bildung", "fortbildung"],
   "data protection": ["datenschutz"],
   discrimination: ["diskriminierung", "benachteiligung"],
@@ -328,6 +340,22 @@ const GLOSSARY = {
   "third country transfer": ["drittstaat", "übermittlung"],
 };
 
+// Every single-word glossary key, e.g. "employer", "employee", "dismissal".
+// Used below to stop a query word that IS one of these (so its meaning is
+// already unambiguous) from also fuzzy-prefix-matching a DIFFERENT key -
+// see the SINGLE_WORD_KEYS check in expandQueryTerms for why this matters.
+const SINGLE_WORD_KEYS = new Set(Object.keys(GLOSSARY).filter((p) => !p.includes(" ")));
+
+// Keys that must match the query word exactly, never via the fuzzy prefix
+// rule below, because they're common English words that happen to share a
+// long prefix with a semantically unrelated word a user is likely to type.
+// Confirmed live: "personal" (from "my personal data") fuzzy-matched
+// "personnel" (shares "person"/6-7 letters), injecting the German word
+// "Personal" (workforce/staff) as a search term and ranking a totally
+// unrelated section ("Personalplanung"/workforce planning) above the
+// actually-correct data-protection section.
+const EXACT_ONLY_KEYS = new Set(["personnel"]);
+
 function expandQueryTerms(query, language) {
   const q = query.toLowerCase();
   const terms = new Set();
@@ -360,9 +388,20 @@ function expandQueryTerms(query, language) {
       matched = queryWords.some((w) => {
         // Short keys (e.g. "br" for Betriebsrat) require an exact
         // whole-word match - prefix matching on something this short
-        // would match all sorts of unrelated words.
-        if (phrase.length < 4) return w === phrase;
+        // would match all sorts of unrelated words. Same for keys on the
+        // EXACT_ONLY_KEYS denylist (see its comment above).
+        if (phrase.length < 4 || EXACT_ONLY_KEYS.has(phrase)) return w === phrase;
         if (w.length < 4) return false;
+        // Confirmed live: without this, "employer" (a query word that IS
+        // itself the exact glossary key for "arbeitgeber") fuzzy-matched
+        // into the DIFFERENT key "employee" too - they share a 7-of-8-
+        // letter prefix ("employe...") - pulling "arbeitnehmer" (one of
+        // the single most common words in the whole law) into the search
+        // terms and burying the real match under 7 irrelevant sections.
+        // Once a word exactly equals some OTHER single-word key, its
+        // meaning is already unambiguous, so it shouldn't also
+        // fuzzy-match a different one here.
+        if (w !== phrase && SINGLE_WORD_KEYS.has(w)) return false;
         let i = 0;
         while (i < w.length && i < phrase.length && w[i] === phrase[i]) i++;
         return i >= 4;
@@ -383,15 +422,33 @@ const MAX_TERM_CONTRIBUTION = 4;
 function lexicalSearch(query, language, topK = 5) {
   const terms = [...expandQueryTerms(query, language)].filter((t) => t.length > 2);
   if (!terms.length) return [];
+
+  const haystacks = ALL_SECTIONS.map((s) => `${s.title_de} ${s.text_de}`.toLowerCase());
+
+  // Poor-man's IDF: a term present in nearly every section (e.g.
+  // "arbeitgeber"/"betriebsrat" - present in roughly half to nearly all of
+  // them) is weak evidence of relevance and should barely move the
+  // ranking; a term present in only a handful of sections is a much
+  // stronger, more diagnostic signal. Confirmed live: without this, flat
+  // counting let a section that only matched ubiquitous words outscore
+  // the section that actually answers the question - § 87 BetrVG (the
+  // real co-determination provision for overtime) ranked 21st of 126
+  // candidates; weighted by rarity it ranks 3rd, well within topK.
+  const idf = {};
+  for (const t of terms) {
+    const docFreq = haystacks.reduce((n, h) => n + (h.includes(t) ? 1 : 0), 0);
+    idf[t] = Math.log((haystacks.length + 1) / (docFreq + 1)) + 1;
+  }
+
   const scored = [];
-  for (const s of ALL_SECTIONS) {
-    const haystack = `${s.title_de} ${s.text_de}`.toLowerCase();
+  for (let i = 0; i < ALL_SECTIONS.length; i++) {
+    const haystack = haystacks[i];
     let score = 0;
     for (const t of terms) {
       const count = haystack.split(t).length - 1;
-      score += Math.min(count, MAX_TERM_CONTRIBUTION);
+      score += Math.min(count, MAX_TERM_CONTRIBUTION) * idf[t];
     }
-    if (score > 0) scored.push([score, s]);
+    if (score > 0) scored.push([score, ALL_SECTIONS[i]]);
   }
   scored.sort((a, b) => b[0] - a[0]);
   return scored.slice(0, topK).map(([, s]) => s);
@@ -588,14 +645,18 @@ export default async (request) => {
   const deadline = Date.now() + DEADLINE_BUDGET_MS;
 
   try {
-    // Wider net than the Python version's fallback (top_k=5): there's no
-    // LLM selector call here to narrow candidates semantically first (see
-    // file header), so lexical scoring alone is more likely to let a
-    // genuinely relevant section fall just outside the cutoff. Back to 8
-    // (was briefly cut to 6 for quota reasons) - the missing-context vague
-    // answers that caused cost more than the input-token increase does,
-    // since input tokens aren't what the free tiers actually meter tightly.
-    const sections = lexicalSearch(question, language, 8);
+    // Matches the Python version's fallback (top_k=5). Was briefly widened
+    // to 8 to compensate for missing context, but that was masking a real
+    // bug in expandQueryTerms() (see EXACT_ONLY_KEYS / SINGLE_WORD_KEYS
+    // above) that let common English words fuzzy-match unrelated glossary
+    // keys, flooding the ranking with noise scored only on ubiquitous
+    // words like "arbeitgeber" - confirmed live, a real query's top 2
+    // results were correct but positions 3-8 were flat-scored filler with
+    // no real signal. With that fixed, 8 slots mostly just burn LLM input
+    // tokens (and response payload) on that filler; 5 keeps a recall
+    // margin for questions that need more than one section without paying
+    // for entries that were never going to be genuinely relevant.
+    const sections = lexicalSearch(question, language, 5);
 
     if (!sections.length) {
       return jsonResponse({
